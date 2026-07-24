@@ -63,6 +63,31 @@ class MCPStdioServerTest extends BaseGraphServerTest {
     assertThat(result.getString("protocolVersion")).isNotEmpty();
     assertThat(result.getJSONObject("serverInfo").getString("name")).isEqualTo("arcadedb");
     assertThat(result.getJSONObject("capabilities").has("tools")).isTrue();
+    assertThat(result.getJSONObject("capabilities").has("prompts")).isTrue();
+  }
+
+  @Test
+  void promptsListAndGet() throws Exception {
+    JSONObject response = sendSingleRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 30)
+        .put("method", "prompts/list")
+        .put("params", new JSONObject()));
+    assertThat(response.getJSONObject("result").getJSONArray("prompts").length()).isEqualTo(2);
+
+    response = sendSingleRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 31)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "build_knowledge_graph")
+            .put("arguments", new JSONObject()
+                .put("database", "graph")
+                .put("sourceText", "Ada collaborated with Charles."))));
+    final JSONObject prompt = response.getJSONObject("result");
+    assertThat(prompt.getJSONArray("messages").getJSONObject(0).getString("role")).isEqualTo("user");
+    assertThat(prompt.getJSONArray("messages").getJSONObject(0)
+        .getJSONObject("content").getString("text")).contains("Ada collaborated with Charles.");
   }
 
   @Test

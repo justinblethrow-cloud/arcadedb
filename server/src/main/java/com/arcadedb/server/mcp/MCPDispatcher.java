@@ -194,6 +194,8 @@ public class MCPDispatcher {
         case "tools/call" -> toolsCall(id, params, user);
         case "resources/list" -> resourcesList(id, user);
         case "resources/read" -> resourcesRead(id, params, user);
+        case "prompts/list" -> result(id, MCPPrompts.list());
+        case "prompts/get" -> promptsGet(id, params);
         case "ping" -> result(id, new JSONObject());
         default -> error(id, -32601, "Method not found: " + method, 200);
       };
@@ -219,12 +221,25 @@ public class MCPDispatcher {
     final JSONObject capabilities = new JSONObject();
     capabilities.put("tools", new JSONObject().put("listChanged", false));
     capabilities.put("resources", new JSONObject().put("listChanged", false).put("subscribe", false));
+    capabilities.put("prompts", new JSONObject().put("listChanged", false));
     result.put("capabilities", capabilities);
 
     result.put("instructions",
         config.getToolProfile() == MCPConfiguration.ToolProfile.RAG ? RAG_INSTRUCTIONS : INSTRUCTIONS);
 
     return result;
+  }
+
+  private MCPResponse promptsGet(final Object id, final JSONObject params) {
+    try {
+      return result(id, MCPPrompts.get(params));
+    } catch (final IllegalArgumentException e) {
+      LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get -> invalid params: %s", transport, e.getMessage());
+      return error(id, -32602, e.getMessage(), 200);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/get -> error: %s", transport, e.getMessage());
+      return error(id, -32603, "Internal error: " + e.getMessage(), 200);
+    }
   }
 
   private MCPResponse resourcesList(final Object id, final ServerSecurityUser user) {

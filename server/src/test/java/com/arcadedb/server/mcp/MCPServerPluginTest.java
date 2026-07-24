@@ -234,6 +234,32 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(result.getString("protocolVersion")).isNotEmpty();
     assertThat(result.getJSONObject("serverInfo").getString("name")).isEqualTo("arcadedb");
     assertThat(result.getJSONObject("capabilities").has("tools")).isTrue();
+    assertThat(result.getJSONObject("capabilities").has("prompts")).isTrue();
+  }
+
+  @Test
+  void promptsListAndGet() throws Exception {
+    JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 30)
+        .put("method", "prompts/list")
+        .put("params", new JSONObject()));
+    final JSONArray prompts = response.getJSONObject("result").getJSONArray("prompts");
+    assertThat(prompts.length()).isEqualTo(2);
+
+    response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 31)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "graphrag_query")
+            .put("arguments", new JSONObject()
+                .put("database", getDatabaseName())
+                .put("question", "What is connected?"))));
+    final JSONObject prompt = response.getJSONObject("result");
+    assertThat(prompt.getJSONArray("messages").getJSONObject(0).getString("role")).isEqualTo("user");
+    assertThat(prompt.getJSONArray("messages").getJSONObject(0)
+        .getJSONObject("content").getString("text")).contains("What is connected?");
   }
 
   @Test

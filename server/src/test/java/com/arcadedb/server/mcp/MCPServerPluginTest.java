@@ -1283,6 +1283,62 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void hybridSearchValidatesBoundsAndExpansionShape() throws Exception {
+    seedHybridIndex();
+
+    final JSONObject invalidK = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridSeed[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 0));
+    assertThat(invalidK.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'k' must be between 1 and 1000");
+
+    final JSONObject invalidDirection = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridSeed[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("expand", new JSONObject().put("direction", "sideways"))
+        .put("k", 1));
+    assertThat(invalidDirection.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("direction").contains("out").contains("in").contains("both");
+
+    final JSONArray tooManyEdgeTypes = new JSONArray();
+    for (int i = 0; i < 65; i++)
+      tooManyEdgeTypes.put("Edge" + i);
+    final JSONObject excessiveEdgeTypes = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridSeed[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("expand", new JSONObject().put("edgeTypes", tooManyEdgeTypes))
+        .put("k", 1));
+    assertThat(excessiveEdgeTypes.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("at most 64");
+
+    final JSONObject blankEdgeType = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridSeed[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("expand", new JSONObject().put("edgeTypes", new JSONArray().put(" ")))
+        .put("k", 1));
+    assertThat(blankEdgeType.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("non-blank strings");
+
+    final JSONObject blankFullTextPair = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridSeed[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("fulltextIndexName", " ")
+        .put("fulltextQuery", " ")
+        .put("k", 1));
+    assertThat(blankFullTextPair.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        blankFullTextPair.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getString("fusionStrategy")).isEqualTo("NONE");
+    assertThat(payload.has("fulltextIndexName")).isFalse();
+  }
+
+  @Test
   void hybridSearchEnforcesDepthAndReadGuards() throws Exception {
     seedHybridIndex();
 

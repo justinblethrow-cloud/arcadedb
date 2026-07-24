@@ -109,6 +109,20 @@ public class VectorSearchTool {
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
+    return executeInternal(server, user, args, config, true);
+  }
+
+  /**
+   * Runs the same validated search for a downstream fusion pipeline without serializing candidate properties that the caller
+   * would immediately discard.
+   */
+  static JSONObject executeForFusion(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
+      final MCPConfiguration config) {
+    return executeInternal(server, user, args, config, false);
+  }
+
+  private static JSONObject executeInternal(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
+      final MCPConfiguration config, final boolean includeProperties) {
     if (!config.isAllowReads())
       throw new SecurityException("Read operations are not allowed by MCP configuration");
 
@@ -173,10 +187,10 @@ public class VectorSearchTool {
     if (!analyzed.isIdempotent())
       throw new SecurityException("Generated vector search is not read-only");
 
-    final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
+    final JsonSerializer serializer = includeProperties ? JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)
         .setUseCollectionSize(false)
-        .setUseCollectionSizeForEdges(false);
+        .setUseCollectionSizeForEdges(false) : null;
 
     final JSONArray results = new JSONArray();
     try {
@@ -363,8 +377,9 @@ public class VectorSearchTool {
 
     final JSONObject result = new JSONObject()
         .put("rid", rid.toString())
-        .put("score", score)
-        .put("properties", serializer.serializeDocument(document));
+        .put("score", score);
+    if (serializer != null)
+      result.put("properties", serializer.serializeDocument(document));
     if (!sparse)
       result.put("distance", score);
     results.put(result);

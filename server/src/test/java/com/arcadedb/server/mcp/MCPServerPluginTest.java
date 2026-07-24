@@ -19,6 +19,7 @@
 package com.arcadedb.server.mcp;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -32,6 +33,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -147,6 +149,59 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     });
   }
 
+  private void seedHybridIndex() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (db.getSchema().existsType("McpHybridNode"))
+      return;
+
+    db.transaction(() -> {
+      db.command("sql", "CREATE VERTEX TYPE McpHybridNode BUCKETS 1");
+      db.command("sql", "CREATE PROPERTY McpHybridNode.name STRING");
+      db.command("sql", "CREATE PROPERTY McpHybridNode.content STRING");
+      db.command("sql", "CREATE VERTEX TYPE McpHybridSeed EXTENDS McpHybridNode");
+      db.command("sql", "CREATE PROPERTY McpHybridSeed.embedding ARRAY_OF_FLOATS");
+      db.command("sql", "CREATE VERTEX TYPE McpHybridTarget EXTENDS McpHybridNode");
+      db.command("sql", """
+          CREATE INDEX ON McpHybridSeed (embedding) LSM_VECTOR
+          METADATA { dimensions: 3, similarity: 'COSINE' }
+          """);
+      db.command("sql", "CREATE INDEX ON McpHybridNode (content) FULL_TEXT");
+      db.command("sql", "CREATE EDGE TYPE McpHybridLink");
+
+      final MutableVertex seedA = db.newVertex("McpHybridSeed");
+      seedA.set("name", "hybrid-seed-a");
+      seedA.set("content", "vector origin");
+      seedA.set("embedding", new float[] { 1.0f, 0.0f, 0.0f });
+      seedA.save();
+
+      final MutableVertex seedB = db.newVertex("McpHybridSeed");
+      seedB.set("name", "hybrid-seed-b");
+      seedB.set("content", "vector origin");
+      seedB.set("embedding", new float[] { 0.95f, 0.05f, 0.0f });
+      seedB.save();
+
+      final MutableVertex shared = db.newVertex("McpHybridTarget");
+      shared.set("name", "hybrid-shared");
+      shared.set("content", "quantum shared");
+      shared.save();
+
+      final MutableVertex direct = db.newVertex("McpHybridTarget");
+      direct.set("name", "hybrid-direct");
+      direct.set("content", "quantum direct");
+      direct.save();
+
+      final MutableVertex depthTwo = db.newVertex("McpHybridTarget");
+      depthTwo.set("name", "hybrid-depth-two");
+      depthTwo.set("content", "quantum deep");
+      depthTwo.save();
+
+      seedA.newEdge("McpHybridLink", shared);
+      seedA.newEdge("McpHybridLink", direct);
+      seedB.newEdge("McpHybridLink", shared);
+      shared.newEdge("McpHybridLink", depthTwo);
+    });
+  }
+
   @Test
   void initialize() throws Exception {
     final JSONObject response = mcpRequest(new JSONObject()
@@ -172,7 +227,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    assertThat(tools.length()).isEqualTo(14);
+    assertThat(tools.length()).isEqualTo(15);
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -186,6 +241,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     boolean hasGetServerSettings = false;
     boolean hasSetServerSetting = false;
     boolean hasVectorSearch = false;
+    boolean hasHybridSearch = false;
     boolean hasFullTextSearch = false;
     boolean hasUpsertEntity = false;
     boolean hasUpsertRelationship = false;
@@ -204,6 +260,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       case "get_server_settings" -> hasGetServerSettings = true;
       case "set_server_setting" -> hasSetServerSetting = true;
       case "vector_search" -> hasVectorSearch = true;
+      case "hybrid_search" -> hasHybridSearch = true;
       case "full_text_search" -> hasFullTextSearch = true;
       case "upsert_entity" -> hasUpsertEntity = true;
       case "upsert_relationship" -> hasUpsertRelationship = true;
@@ -220,6 +277,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(hasGetServerSettings).isTrue();
     assertThat(hasSetServerSetting).isTrue();
     assertThat(hasVectorSearch).isTrue();
+    assertThat(hasHybridSearch).isTrue();
     assertThat(hasFullTextSearch).isTrue();
     assertThat(hasUpsertEntity).isTrue();
     assertThat(hasUpsertRelationship).isTrue();
@@ -1090,6 +1148,190 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("k", 1));
     assertThat(denied.getBoolean("isError", false)).isTrue();
     assertThat(denied.getJSONArray("content").getJSONObject(0).getString("text")).contains("not allowed");
+  }
+
+  @Test
+  void hybridSearchVectorOnlyPreservesVectorRanking() throws Exception {
+    seedHybridIndex();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridSeed[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 10));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getString("fusionStrategy")).isEqualTo("NONE");
+    assertThat(payload.getInt("sourceCount")).isEqualTo(1);
+    assertThat(payload.getInt("count")).isEqualTo(2);
+    assertThat(payload.getJSONArray("results").getJSONObject(0)
+        .getJSONObject("properties").getString("name")).isEqualTo("hybrid-seed-a");
+    assertThat(payload.getJSONArray("results").getJSONObject(0).has("path")).isFalse();
+  }
+
+  @Test
+  void hybridSearchExpandsAndDeduplicatesGraphNeighbors() throws Exception {
+    seedHybridIndex();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridSeed[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 10)
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridLink"))
+            .put("direction", "out")
+            .put("maxDepth", 1)));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getInt("sourceCount")).isEqualTo(2);
+    assertThat(payload.getInt("expandedCount")).isEqualTo(2);
+    assertThat(payload.getBoolean("expansionTruncated")).isFalse();
+
+    final JSONArray results = payload.getJSONArray("results");
+    int sharedCount = 0;
+    for (int i = 0; i < results.length(); i++) {
+      final JSONObject result = results.getJSONObject(i);
+      final String name = result.getJSONObject("properties").getString("name");
+      if ("hybrid-shared".equals(name)) {
+        sharedCount++;
+        assertThat(result.getInt("depth")).isEqualTo(1);
+        assertThat(result.getJSONArray("path").length()).isEqualTo(2);
+      }
+    }
+    assertThat(sharedCount).isEqualTo(1);
+  }
+
+  @Test
+  void hybridSearchFusesVectorExpansionAndFullText() throws Exception {
+    seedHybridIndex();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridSeed[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 10)
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridLink"))
+            .put("maxDepth", 2))
+        .put("fulltextIndexName", "McpHybridNode[content]")
+        .put("fulltextQuery", "quantum")
+        .put("fusionStrategy", "RRF"));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getString("fusionStrategy")).isEqualTo("RRF");
+    assertThat(payload.getInt("sourceCount")).isEqualTo(3);
+    assertThat(payload.getInt("expandedCount")).isEqualTo(3);
+    assertThat(payload.getString("fulltextIndexName")).isEqualTo("McpHybridNode[content]");
+
+    final Set<String> names = new HashSet<>();
+    JSONObject depthTwo = null;
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++) {
+      final JSONObject result = results.getJSONObject(i);
+      final String name = result.getJSONObject("properties").getString("name");
+      names.add(name);
+      if ("hybrid-depth-two".equals(name))
+        depthTwo = result;
+    }
+    assertThat(names).contains("hybrid-shared", "hybrid-direct", "hybrid-depth-two");
+    assertThat(depthTwo).isNotNull();
+    assertThat(depthTwo.getInt("depth")).isEqualTo(2);
+    assertThat(depthTwo.getJSONArray("path").length()).isEqualTo(3);
+    assertThat(depthTwo.getFloat("fusedScore")).isPositive();
+  }
+
+  @Test
+  void hybridSearchSupportsConfiguredFusionStrategies() throws Exception {
+    seedHybridIndex();
+
+    for (final String strategy : List.of("DBSF", "LINEAR")) {
+      final JSONObject response = callTool("hybrid_search", new JSONObject()
+          .put("database", getDatabaseName())
+          .put("vectorIndexName", "McpHybridSeed[embedding]")
+          .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+          .put("k", 10)
+          .put("expand", new JSONObject()
+              .put("edgeTypes", new JSONArray().put("McpHybridLink"))
+              .put("maxDepth", 1))
+          .put("fusionStrategy", strategy));
+
+      assertThat(response.getBoolean("isError", true)).isFalse();
+      final JSONObject payload = new JSONObject(
+          response.getJSONArray("content").getJSONObject(0).getString("text"));
+      assertThat(payload.getString("fusionStrategy")).isEqualTo(strategy);
+      assertThat(payload.getInt("sourceCount")).isEqualTo(2);
+      assertThat(payload.getJSONArray("results")).isNotEmpty();
+    }
+
+    final JSONObject invalid = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridSeed[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 10)
+        .put("expand", new JSONObject().put("maxDepth", 1))
+        .put("fusionStrategy", "unknown"));
+    assertThat(invalid.getBoolean("isError", false)).isTrue();
+    assertThat(invalid.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("fusionStrategy").contains("RRF").contains("DBSF").contains("LINEAR");
+  }
+
+  @Test
+  void hybridSearchEnforcesDepthAndReadGuards() throws Exception {
+    seedHybridIndex();
+
+    final JSONObject excessiveDepth = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridSeed[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 10)
+        .put("expand", new JSONObject().put("maxDepth", 4)));
+    assertThat(excessiveDepth.getBoolean("isError", false)).isTrue();
+    assertThat(excessiveDepth.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("maxDepth").contains("3");
+
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+    final JSONObject denied = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridSeed[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 1));
+    assertThat(denied.getBoolean("isError", false)).isTrue();
+    assertThat(denied.getJSONArray("content").getJSONObject(0).getString("text")).contains("not allowed");
+  }
+
+  @Test
+  void hybridSearchRequiresPairedFullTextArgumentsAndVertexExpansion() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject unpaired = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("fulltextQuery", "java")
+        .put("k", 2));
+    assertThat(unpaired.getBoolean("isError", false)).isTrue();
+    assertThat(unpaired.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("provided together");
+
+    final JSONObject documentExpansion = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("expand", new JSONObject().put("maxDepth", 1))
+        .put("k", 2));
+    assertThat(documentExpansion.getBoolean("isError", false)).isTrue();
+    assertThat(documentExpansion.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("requires the vector index to return vertices");
   }
 
   @Test

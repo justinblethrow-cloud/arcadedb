@@ -85,6 +85,20 @@ public class FullTextSearchTool {
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
+    return executeInternal(server, user, args, config, true);
+  }
+
+  /**
+   * Runs the same validated search for a downstream fusion pipeline without serializing candidate properties that the caller
+   * would immediately discard.
+   */
+  static JSONObject executeForFusion(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
+      final MCPConfiguration config) {
+    return executeInternal(server, user, args, config, false);
+  }
+
+  private static JSONObject executeInternal(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
+      final MCPConfiguration config, final boolean includeProperties) {
     if (!config.isAllowReads())
       throw new SecurityException("Read operations are not allowed by MCP configuration");
 
@@ -115,10 +129,10 @@ public class FullTextSearchTool {
     // HashMap iteration order (which varies with RID hashing and bucket layout).
     ranked.sort(Map.Entry.<RID, Float>comparingByValue().reversed().thenComparing(Map.Entry::getKey));
 
-    final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
+    final JsonSerializer serializer = includeProperties ? JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)
         .setUseCollectionSize(false)
-        .setUseCollectionSizeForEdges(false);
+        .setUseCollectionSizeForEdges(false) : null;
 
     final JSONArray results = new JSONArray();
     for (final Map.Entry<RID, Float> hit : ranked) {
@@ -142,10 +156,12 @@ public class FullTextSearchTool {
       if (!(record instanceof final Document document))
         continue;
 
-      results.put(new JSONObject()
+      final JSONObject result = new JSONObject()
           .put("rid", hit.getKey().toString())
-          .put("score", hit.getValue())
-          .put("properties", serializer.serializeDocument(document)));
+          .put("score", hit.getValue());
+      if (serializer != null)
+        result.put("properties", serializer.serializeDocument(document));
+      results.put(result);
     }
 
     return new JSONObject()

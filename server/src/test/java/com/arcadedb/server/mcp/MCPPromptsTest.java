@@ -130,6 +130,55 @@ class MCPPromptsTest extends BaseGraphServerTest {
     assertThat(response.json().getJSONObject("error").getInt("code")).isEqualTo(-32602);
     assertThat(response.json().getJSONObject("error").getString("message")).contains("question");
 
+    response = dispatcher.dispatch(promptRequest(GraphRagQueryPrompt.NAME,
+        new JSONObject().put("database", " ").put("question", "question")), user);
+    assertThat(response.json().getJSONObject("error").getInt("code")).isEqualTo(-32602);
+    assertThat(response.json().getJSONObject("error").getString("message")).contains("database");
+
+    response = dispatcher.dispatch(promptRequest(GraphRagQueryPrompt.NAME,
+        new JSONObject().put("database", "graph").put("question", 42)), user);
+    assertThat(response.json().getJSONObject("error").getInt("code")).isEqualTo(-32602);
+    assertThat(response.json().getJSONObject("error").getString("message")).contains("question");
+
+    response = dispatcher.dispatch(promptRequest(BuildKnowledgeGraphPrompt.NAME,
+        new JSONObject().put("database", "graph")), user);
+    assertThat(response.json().getJSONObject("error").getInt("code")).isEqualTo(-32602);
+    assertThat(response.json().getJSONObject("error").getString("message")).contains("sourceText");
+
+    response = dispatcher.dispatch(promptRequest(BuildKnowledgeGraphPrompt.NAME,
+        new JSONObject().put("database", 42).put("sourceText", "source")), user);
+    assertThat(response.json().getJSONObject("error").getInt("code")).isEqualTo(-32602);
+    assertThat(response.json().getJSONObject("error").getString("message")).contains("database");
+
+    response = dispatcher.dispatch(promptRequest(BuildKnowledgeGraphPrompt.NAME,
+        new JSONObject().put("database", "graph").put("sourceText", " ")), user);
+    assertThat(response.json().getJSONObject("error").getInt("code")).isEqualTo(-32602);
+    assertThat(response.json().getJSONObject("error").getString("message")).contains("sourceText");
+
+    response = dispatcher.dispatch(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 3)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject().put("name", GraphRagQueryPrompt.NAME)), user);
+    assertThat(response.json().getJSONObject("error").getInt("code")).isEqualTo(-32602);
+    assertThat(response.json().getJSONObject("error").getString("message")).contains("database");
+
+    response = dispatcher.dispatch(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 3)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject().put("name", " ")), user);
+    assertThat(response.json().getJSONObject("error").getInt("code")).isEqualTo(-32602);
+    assertThat(response.json().getJSONObject("error").getString("message")).contains("name");
+
+    response = dispatcher.dispatch(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 3)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject().put("name", 42)), user);
+    assertThat(response.json().getJSONObject("error").getInt("code")).isEqualTo(-32602);
+    assertThat(response.json().getJSONObject("error").getString("message")).contains("name");
+
     response = dispatcher.dispatch(new JSONObject()
         .put("jsonrpc", "2.0")
         .put("id", 3)

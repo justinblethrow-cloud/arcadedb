@@ -56,6 +56,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("allowReads", true)
         .put("allowedUsers", new JSONArray().put("root")));
     seedFullTextIndex();
+    seedSampleRecords();
   }
 
   private void seedFullTextIndex() {
@@ -202,6 +203,23 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     });
   }
 
+  private void seedSampleRecords() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (db.getSchema().existsType("McpSampleRecord"))
+      return;
+
+    db.transaction(() -> {
+      db.command("sql", "CREATE DOCUMENT TYPE McpSampleRecord");
+      db.command("sql", "CREATE PROPERTY McpSampleRecord.ordinal INTEGER");
+      db.command("sql", "CREATE PROPERTY McpSampleRecord.label STRING");
+      for (int i = 1; i <= 5; i++)
+        db.command("sql", "INSERT INTO McpSampleRecord SET ordinal = ?, label = ?", i, "sample-" + i);
+
+      db.command("sql", "CREATE DOCUMENT TYPE McpEmptySample");
+      db.command("sql", "CREATE PROPERTY McpEmptySample.value STRING");
+    });
+  }
+
   @Test
   void initialize() throws Exception {
     final JSONObject response = mcpRequest(new JSONObject()
@@ -227,7 +245,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    assertThat(tools.length()).isEqualTo(15);
+    assertThat(tools.length()).isEqualTo(16);
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -240,6 +258,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     boolean hasProfilerStatus = false;
     boolean hasGetServerSettings = false;
     boolean hasSetServerSetting = false;
+    boolean hasSampleRecords = false;
     boolean hasVectorSearch = false;
     boolean hasHybridSearch = false;
     boolean hasFullTextSearch = false;
@@ -259,6 +278,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       case "profiler_status" -> hasProfilerStatus = true;
       case "get_server_settings" -> hasGetServerSettings = true;
       case "set_server_setting" -> hasSetServerSetting = true;
+      case "sample_records" -> hasSampleRecords = true;
       case "vector_search" -> hasVectorSearch = true;
       case "hybrid_search" -> hasHybridSearch = true;
       case "full_text_search" -> hasFullTextSearch = true;
@@ -276,6 +296,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(hasProfilerStatus).isTrue();
     assertThat(hasGetServerSettings).isTrue();
     assertThat(hasSetServerSetting).isTrue();
+    assertThat(hasSampleRecords).isTrue();
     assertThat(hasVectorSearch).isTrue();
     assertThat(hasHybridSearch).isTrue();
     assertThat(hasFullTextSearch).isTrue();
@@ -326,6 +347,84 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       }
     }
     assertThat(foundV1).isTrue();
+  }
+
+  @Test
+  void sampleRecordsUsesRequestedTypesAndPerTypeLimit() throws Exception {
+    final JSONObject response = callTool("sample_records", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("types", new JSONArray()
+            .put("McpSampleRecord")
+            .put("McpEmptySample")
+            .put("McpSampleRecord"))
+        .put("limit", 2));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    final JSONObject samples = payload.getJSONObject("samples");
+
+    assertThat(samples.keySet()).containsExactlyInAnyOrder("McpSampleRecord", "McpEmptySample");
+    assertThat(samples.getJSONArray("McpSampleRecord").length()).isEqualTo(2);
+    assertThat(samples.getJSONArray("McpSampleRecord").getJSONObject(0).has("ordinal")).isTrue();
+    assertThat(samples.getJSONArray("McpEmptySample").length()).isZero();
+  }
+
+  @Test
+  void sampleRecordsDefaultsToThreeRecordsAcrossAllTypes() throws Exception {
+    final JSONObject response = callTool("sample_records", new JSONObject()
+        .put("database", getDatabaseName()));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    final JSONObject samples = payload.getJSONObject("samples");
+
+    assertThat(samples.has("McpSampleRecord")).isTrue();
+    assertThat(samples.getJSONArray("McpSampleRecord").length()).isEqualTo(3);
+    assertThat(samples.has("McpEmptySample")).isTrue();
+    assertThat(samples.getJSONArray("McpEmptySample").length()).isZero();
+  }
+
+  @Test
+  void sampleRecordsRejectsOutOfRangeLimits() throws Exception {
+    for (final int invalidLimit : new int[] { -1, 0, 21 }) {
+      final JSONObject response = callTool("sample_records", new JSONObject()
+          .put("database", getDatabaseName())
+          .put("types", new JSONArray().put("McpSampleRecord"))
+          .put("limit", invalidLimit));
+
+      assertThat(response.getBoolean("isError", false)).isTrue();
+      final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+      assertThat(errorText).contains("limit").contains("1").contains("20");
+    }
+  }
+
+  @Test
+  void sampleRecordsRejectsUnknownTypesBeforeQueryExecution() throws Exception {
+    final JSONObject response = callTool("sample_records", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("types", new JSONArray().put("McpSampleRecord` LIMIT 20")));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("does not exist").contains("McpSampleRecord");
+  }
+
+  @Test
+  void sampleRecordsDeniedWhenReadsDisabled() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject response = callTool("sample_records", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("types", new JSONArray().put("McpSampleRecord")));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("not allowed");
   }
 
   @Test

@@ -442,4 +442,32 @@ class TraverseStatementExecutionTest extends TestHelper {
       database.command("sql", traverseQuery, params);
     });
   }
+
+  @Test
+  void traverseFromBoundRidCollection() {
+    final String vertexType = "BoundRidCollectionTraverseV";
+    final String edgeType = "BoundRidCollectionTraverseE";
+    database.getSchema().createVertexType(vertexType);
+    database.getSchema().createEdgeType(edgeType);
+
+    database.transaction(() -> {
+      final RID firstRoot = database.command("sql", "CREATE VERTEX " + vertexType).next().getIdentity().orElseThrow();
+      final RID secondRoot = database.command("sql", "CREATE VERTEX " + vertexType).next().getIdentity().orElseThrow();
+      final RID firstChild = database.command("sql", "CREATE VERTEX " + vertexType).next().getIdentity().orElseThrow();
+      final RID secondChild = database.command("sql", "CREATE VERTEX " + vertexType).next().getIdentity().orElseThrow();
+
+      database.command("sql", "CREATE EDGE " + edgeType + " FROM :from TO :to", Map.of("from", firstRoot, "to", firstChild)).close();
+      database.command("sql", "CREATE EDGE " + edgeType + " FROM :from TO :to", Map.of("from", secondRoot, "to", secondChild)).close();
+
+      try (final ResultSet result = database.query("sql",
+          "SELECT FROM (TRAVERSE out('" + edgeType + "') FROM :seeds MAXDEPTH 1)",
+          Map.of("seeds", List.of(firstRoot, secondRoot)))) {
+        final List<RID> actual = new ArrayList<>();
+        while (result.hasNext())
+          actual.add(result.next().getIdentity().orElseThrow());
+
+        assertThat(actual).containsExactlyInAnyOrder(firstRoot, secondRoot, firstChild, secondChild);
+      }
+    });
+  }
 }

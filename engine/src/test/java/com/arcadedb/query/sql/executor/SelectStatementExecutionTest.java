@@ -3081,6 +3081,26 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void selectFromBoundRidCollection() {
+    final String typeName = "testSelectFromBoundRidCollection";
+    database.getSchema().createVertexType(typeName);
+
+    database.transaction(() -> {
+      final RID first = database.command("sql", "CREATE VERTEX " + typeName).next().getIdentity().orElseThrow();
+      final RID second = database.command("sql", "CREATE VERTEX " + typeName).next().getIdentity().orElseThrow();
+
+      try (final ResultSet result = database.query("sql", "SELECT @rid AS rid FROM :seeds",
+          Map.of("seeds", List.of(first, second)))) {
+        final List<RID> actual = new ArrayList<>();
+        while (result.hasNext())
+          actual.add(result.next().getProperty("rid"));
+
+        assertThat(actual).containsExactlyInAnyOrder(first, second);
+      }
+    });
+  }
+
+  @Test
   void matches() {
     final String className = "testMatches";
     database.getSchema().createDocumentType(className);
